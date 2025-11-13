@@ -1,16 +1,20 @@
-// src/components/CropCard.tsx
 'use client'
+
+import { getDoc, doc } from 'firebase/firestore'
+import { ref, get } from 'firebase/database'
+import { db, rtdb } from '@/utils/firebase'
+import Link from 'next/link'
+import { type NotificationType } from '@/components/Notification'
 
 import { useReadContract, useWriteContract } from 'wagmi'
 import { contractAddress, contractABI } from '../utils/contract'
 import { useTranslations } from '../utils/i18n'
-import Image from 'next/image'
 import ProgressBar from './ProgressBar'
-import { useState, useEffect } from 'react'
-import toast from 'react-hot-toast'
-import { Loader2, Award, SatelliteDish, X } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { Loader2, SatelliteDish, X, ShieldCheck, ShieldAlert, Thermometer, Droplet, Clock, Eye, Lock, Cpu } from 'lucide-react'
 import { useCookies } from 'react-cookie'
 
+// --- TYPES ---
 type CropData = [
   id: bigint,
   farmerAddress: string,
@@ -23,35 +27,56 @@ type CropData = [
   harvestedOutput: bigint
 ]
 
-type SensorDataResponse = {
-  data?: [number, number, number]
+type FirebaseSensorData = {
+  moisture: number;
+  temperature: string;
+  soil_co2: number;
+  [key: string]: any;
+}
+
+type FirestoreDeviceData = {
+  init_time: string;
+  password: string;
+  [key: string]: any;
 }
 
 export default function CropCard({
   cropId,
   onUpdateStage,
-  onStore
+  onStore,
+  onNotify 
 }: {
   cropId: number
   onUpdateStage: (cropId: number, newStage: number, lossPercentage?: number) => void
   onStore: (cropId: number) => void
+  onNotify: (message: string, type: NotificationType) => void
 }) {
+  
+  // --- 1. HOOKS ---
   const t = useTranslations()
   const { writeContract } = useWriteContract()
+  
+  // UI State
   const [loading, setLoading] = useState(false)
   const [lossPercentage, setLossPercentage] = useState('')
   const [showLossInput, setShowLossInput] = useState(false)
   const [showSensorModal, setShowSensorModal] = useState(false)
+  const [isClient, setIsClient] = useState(false);
+
+  // IoT State
   const [deviceId, setDeviceId] = useState('')
-  const [sensorData, setSensorData] = useState<{
-    moisture: number | null
-    temperature: number | null
-    humidity: number | null
-  } | null>(null)
+  const [password, setPassword] = useState('')
+  const [sensorData, setSensorData] = useState<FirebaseSensorData | null>(null)
   const [sensorLoading, setSensorLoading] = useState(false)
   const [sensorError, setSensorError] = useState('')
+  
+  // Timer State
+  const [predictionStartTime, setPredictionStartTime] = useState<number | null>(null);
+  const [predictionTimer, setPredictionTimer] = useState<string | null>(null)
+  
   const [cookies, setCookie] = useCookies([`crop_${cropId}_device`])
 
+  // Read from Blockchain
   const { data: crop, refetch } = useReadContract({
     address: contractAddress,
     abi: contractABI,
@@ -59,357 +84,331 @@ export default function CropCard({
     args: [BigInt(cropId)],
   }) as { data: CropData | undefined, refetch: () => void }
 
-  const { refetch: fetchSensorData } = useReadContract({
-    address: contractAddress,
-    abi: contractABI,
-    functionName: 'getSensorReadings',
-    args: [deviceId],
-  }) as {
-    data: [number, number, number] | undefined,
-    refetch: () => Promise<SensorDataResponse>
-  }
+  // --- 2. FAKING LOGIC FUNCTIONS ---
 
-  // Load saved device ID on component mount
+  const connectDevice = async (deviceInput: string, passInput: string, isAutoFetch = false) => {
+    setSensorLoading(true);
+    setSensorError('');
+
+    if (deviceInput !== "device_001") {
+      onNotify("DEVICE DOESNT EXIST", 'error'); 
+      setSensorLoading(false);
+      return;
+    }
+
+    try {
+      const docRef = doc(db, "farms", "farm1", "devices", deviceInput);
+      const snap = await getDoc(docRef);
+
+      if (!snap.exists()) {
+        onNotify("DEVICE DOESNT EXIST", 'error');
+        setSensorLoading(false);
+        return;
+      }
+
+      const data = snap.data() as FirestoreDeviceData;
+
+      if (!isAutoFetch && passInput !== data.password) {
+        onNotify("Wrong Password", 'error'); 
+        setSensorError("Wrong password");
+        setSensorLoading(false);
+        return;
+      }
+
+      const rtdbRef = ref(rtdb, `sensor_data/${deviceInput}`);
+      const sensorSnap = await get(rtdbRef);
+
+      if (sensorSnap.exists()) {
+        setSensorData(sensorSnap.val() as FirebaseSensorData);
+        setCookie(`crop_${cropId}_device`, deviceInput, { path: '/', maxAge: 30 * 24 * 60 * 60 });
+        
+        const cleanTime = data.init_time.replace(" at ", " ").split(" UTC")[0];
+        const startTime = new Date(cleanTime).getTime();
+        setPredictionStartTime(startTime);
+
+        if (!isAutoFetch) {
+          onNotify("Device Connected Successfully", 'success');
+          setShowSensorModal(false);
+          setPassword('');
+        }
+      }
+
+    } catch (e: any) {
+      onNotify("Connection Error: " + e.message, 'error');
+    } finally {
+      setSensorLoading(false);
+    }
+  };
+
+  // --- 3. EFFECTS ---
+
+  useEffect(() => { setIsClient(true); }, []);
+
   useEffect(() => {
-    const savedDeviceId = cookies[`crop_${cropId}_device`]
-    if (savedDeviceId) {
-      setDeviceId(savedDeviceId)
-      fetchSensorDataForDevice(savedDeviceId)
+    const savedId = cookies[`crop_${cropId}_device`];
+    if (savedId && savedId === "device_001") {
+      setDeviceId(savedId);
+      connectDevice(savedId, "project1", true); 
     }
-  }, [cropId])
+  }, [cropId]);
 
-  const fetchSensorDataForDevice = async (device: string) => {
-    setSensorLoading(true)
-    setSensorError('')
-    try {
-      const response = await fetchSensorData()
-      const data = response.data
+  useEffect(() => {
+    if (!isClient || !predictionStartTime) return;
 
-      if (data && data[0] !== 0 && data[1] !== 0 && data[2] !== 0) {
-        setSensorData({
-          moisture: data[0],
-          temperature: data[1],
-          humidity: data[2]
-        })
-        setCookie(`crop_${cropId}_device`, device, { path: '/', maxAge: 30 * 24 * 60 * 60 }) // Store for 30 days
+    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+    const targetTime = predictionStartTime + TWENTY_FOUR_HOURS;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const diff = targetTime - now;
+
+      if (diff <= 0) {
+        setPredictionTimer("Ready");
+        clearInterval(interval);
       } else {
-        setSensorData(null)
-        setSensorError('No sensor found with this device ID')
-        setCookie(`crop_${cropId}_device`, '', { path: '/', maxAge: -1 }) // Remove cookie
+        const h = Math.floor(diff / (1000 * 60 * 60));
+        const m = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+        const s = Math.floor((diff % (1000 * 60)) / 1000);
+        setPredictionTimer(`${h}h ${m}m ${s}s`);
       }
-    } catch (error) {
-      setSensorError('Failed to fetch sensor data')
-      setSensorData(null)
-    } finally {
-      setSensorLoading(false)
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isClient, predictionStartTime]);
+
+  const anomalyStatus = useMemo(() => {
+    if (!sensorData) return { text: "IoT Offline", color: "text-gray-400", bg: "bg-gray-100" };
+    if (sensorData.moisture > 700) return { text: "Anomaly: Soil too Wet", color: "text-red-600", bg: "bg-red-50" };
+    if (sensorData.moisture < 300) return { text: "Anomaly: Soil too Dry", color: "text-orange-600", bg: "bg-orange-50" };
+    return { text: "No Anomalies Detected", color: "text-green-600", bg: "bg-green-50" };
+  }, [sensorData]);
+
+  // --- 4. RENDER ---
+
+  if (!crop) return <div className="h-64 flex items-center justify-center border rounded-xl bg-gray-50"><Loader2 className="animate-spin text-gray-400" /></div>;
+
+  // VISUAL FAKING
+  const displayTitle = `Farm Land ${cropId}`; 
+
+  const stageInfo = (() => {
+    switch (Number(crop[6])) {
+      case 0: return { text: "Yet to sow", color: 'bg-blue-500', progress: 30 }; // <-- MODIFIED TEXT
+      case 1: return { text: t('growing'), color: 'bg-green-500', progress: 60 };
+      case 2: return { text: t('harvested'), color: 'bg-yellow-500', progress: 100 };
+      default: return { text: t('unknown'), color: 'bg-gray-500', progress: 0 };
     }
-  }
+  })();
 
-  if (!crop) return (
-    <div className="card border border-secondary-200 p-6 flex justify-center items-center h-64">
-      <Loader2 className="w-8 h-8 text-primary-600 animate-spin" />
-    </div>
-  )
-
-  const cropTypes = [
-    'maize', 'rice', 'wheat', 'cassava', 'beans',
-    'sorghum', 'millet', 'yam', 'potatoes', 'coffee', 'cotton'
-  ]
-
-  const cropStage = (stage: bigint) => {
-    switch (Number(stage)) {
-      case 0: return { text: t('sown'), color: 'bg-blue-500', progress: 30 }
-      case 1: return { text: t('growing'), color: 'bg-green-500', progress: 60 }
-      case 2: return { text: t('harvested'), color: 'bg-yellow-500', progress: 100 }
-      default: return { text: t('unknown'), color: 'bg-gray-500', progress: 0 }
+  const handleUpdateStage = (newStage: number) => {
+    if (newStage === 2) { setShowLossInput(true); return; }
+    onUpdateStage(cropId, newStage, 0);
+  };
+  const handleHarvest = () => {
+    if (!lossPercentage) return;
+    onUpdateStage(cropId, 2, Number(lossPercentage));
+    setShowLossInput(false);
+  };
+  const handleStore = () => {
+    onStore(cropId);
+  };
+  const handlePredict = () => {
+    if (predictionTimer === "Ready") {
+      onNotify("Prediction Complete: Maize is the optimal crop for next cycle.", 'success');
+    } else {
+      onNotify("The device needs to be deployed in the soil for a minimum of 24 hours to ensure reliable prediction", 'error');
     }
-  }
-
-  const stageInfo = cropStage(crop[6])
-
-  const handleUpdateStage = async (newStage: number) => {
-    if (newStage === 2) {
-      setShowLossInput(true)
-      return
-    }
-
-    setLoading(true)
-    try {
-      await writeContract({
-        address: contractAddress,
-        abi: contractABI,
-        functionName: 'updateCropStage',
-        args: [BigInt(cropId), newStage, 0],
-      })
-      toast.success(`Crop updated to ${stageInfo.text} successfully!`)
-      if (newStage === 1) {
-        const points = Number(crop[7]) * 4
-        toast.custom((t) => (
-          <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-lg shadow-lg flex items-center">
-            <Award className="w-5 h-5 mr-2" />
-            <span>You earned {points} sustainability points!</span>
-          </div>
-        ), { duration: 5000 })
-      }
-      refetch()
-    } catch (error) {
-      toast.error('Failed to update crop stage')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleHarvest = async () => {
-    if (!lossPercentage) return
-
-    setLoading(true)
-    try {
-      await writeContract({
-        address: contractAddress,
-        abi: contractABI,
-        functionName: 'updateCropStage',
-        args: [BigInt(cropId), 2, Number(lossPercentage)],
-      })
-      const harvestPoints = (Number(crop[7]) * (100 - Number(lossPercentage)) / 100) * 2
-      toast.custom((t) => (
-        <div className="bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded-lg shadow-lg flex items-center">
-          <Award className="w-5 h-5 mr-2" />
-          <span>You earned {harvestPoints} harvest points!</span>
-        </div>
-      ), { duration: 5000 })
-      refetch()
-      setShowLossInput(false)
-    } catch (error) {
-      toast.error('Failed to harvest crop')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleStore = async () => {
-    setLoading(true)
-    try {
-      await writeContract({
-        address: contractAddress,
-        abi: contractABI,
-        functionName: 'storeCrop',
-        args: [BigInt(cropId)],
-      })
-      toast.success('Crop stored in silo successfully!')
-      onStore(cropId)
-      refetch()
-    } catch (error) {
-      toast.error('Failed to store crop')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleGetSensorData = async () => {
-    if (!deviceId) {
-      setSensorError('Please enter a device ID')
-      return
-    }
-
-    await fetchSensorDataForDevice(deviceId)
-  }
+  };
 
   return (
-    <div className="card border border-secondary-200 hover:border-primary-300 transition-colors">
-      <div className="p-4 flex items-start space-x-4">
-        <div className="flex-shrink-0">
-          <Image
-            src={`/crops/${cropTypes[Number(crop[2])]}.png`}
-            alt={t(cropTypes[Number(crop[2])])}
-            width={80}
-            height={80}
-            className="rounded-lg object-cover"
-          />
+    <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm hover:shadow-lg transition-all border border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col h-full">
+      
+      {/* Top Section */}
+      <div className="p-5">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h3 className="text-xl font-bold text-gray-900 dark:text-white">{displayTitle}</h3>
+            <p className="text-xs text-gray-500 uppercase tracking-wide font-mono mt-1">ID: {cropId.toString().padStart(4, '0')}</p>
+          </div>
+          
+          {/* Status & IoT Button */}
+          <div className="flex gap-2 items-center">
+            <span className={`px-3 py-1 rounded-full text-xs font-bold text-white uppercase tracking-wide shadow-sm ${stageInfo.color}`}>
+              {stageInfo.text}
+            </span>
+            <button 
+              onClick={() => setShowSensorModal(true)}
+              className={`p-2 rounded-full transition-all shadow-sm ${
+                sensorData 
+                  ? 'bg-green-100 text-green-600 hover:bg-green-200 ring-2 ring-green-500/20' 
+                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200 hover:text-gray-700'
+              }`}
+              title={sensorData ? "Device Connected" : "Connect Device"}
+            >
+              <SatelliteDish className={`w-4 h-4 ${sensorData ? 'animate-pulse' : ''}`} />
+            </button>
+          </div>
         </div>
+        
+        <ProgressBar progress={stageInfo.progress} className="h-2 mb-4" />
 
-        <div className="flex-1">
-          <div className="flex justify-between items-start">
-            <div>
-              <h3 className="font-bold text-lg capitalize">{t(cropTypes[Number(crop[2])])}</h3>
-              <p className="text-secondary-600 text-sm">ID: {cropId}</p>
+        {/* Harvest Data (if ready) */}
+        {Number(crop[6]) >= 2 && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-lg border border-amber-100 dark:border-amber-800/30 mb-4">
+            <span className="text-amber-700 dark:text-amber-400 text-xs font-bold uppercase block mb-1">Yield Output</span>
+            <span className="text-2xl font-mono font-bold text-gray-800 dark:text-gray-100">{crop[8].toString()}</span>
+            <span className="text-sm text-gray-500 ml-1">Units</span>
+          </div>
+        )}
+
+        {/* Sensor Data Panel */}
+        {sensorLoading ? (
+          <div className="py-6 flex justify-center bg-gray-50 rounded-xl"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
+        ) : sensorData ? (
+          <div className="bg-slate-50 dark:bg-slate-900/50 rounded-xl p-3 space-y-3 border border-slate-100 dark:border-slate-700">
+            <div className={`flex items-center justify-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide border ${anomalyStatus.bg} ${anomalyStatus.color}`}>
+              <ShieldCheck className="w-3 h-3" />
+              {anomalyStatus.text}
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`px-2 py-1 rounded-full text-xs font-medium ${stageInfo.color} text-white`}>
-                {stageInfo.text}
-              </span>
-              <button
-                onClick={() => setShowSensorModal(true)}
-                className="bg-primary-100 hover:bg-primary-200 text-primary-800 px-3 py-1 rounded-full text-sm font-medium flex items-center gap-1 transition-colors"
-                title="Connect IoT Sensors"
-              >
-                <SatelliteDish className="w-4 h-4" />
-                <span>IoT</span>
-              </button>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="bg-white dark:bg-gray-800 p-2 rounded-lg shadow-sm text-center border border-slate-100 dark:border-slate-700">
+                <Droplet className="w-4 h-4 text-blue-500 mx-auto mb-1" />
+                <div className="text-sm font-bold text-gray-800 dark:text-gray-200">{sensorData.moisture}</div>
+                <div className="text-[10px] text-gray-400 uppercase">Moist</div>
+              </div>
+              <div className="bg-white dark:bg-gray-800 p-2 rounded-lg shadow-sm text-center border border-slate-100 dark:border-slate-700">
+                <Thermometer className="w-4 h-4 text-orange-500 mx-auto mb-1" />
+                <div className="text-sm font-bold text-gray-800 dark:text-gray-200">{sensorData.temperature}°</div>
+                <div className="text-[10px] text-gray-400 uppercase">Temp</div>
+              </div>
+              <div className="bg-white dark:bg-gray-800 p-2 rounded-lg shadow-sm text-center border border-slate-100 dark:border-slate-700">
+                <span className="text-xs font-black text-gray-400 block mb-1 h-4">CO₂</span>
+                <div className="text-sm font-bold text-gray-800 dark:text-gray-200">{sensorData.soil_co2}</div>
+                <div className="text-[10px] text-gray-400 uppercase">PPM</div>
+              </div>
             </div>
           </div>
+        ) : (
+          <div className="py-6 text-center bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-dashed border-gray-200 dark:border-gray-700">
+            <p className="text-sm text-gray-400">No IoT Device Connected</p>
+          </div>
+        )}
+      </div>
 
-          <ProgressBar progress={stageInfo.progress} className="my-3" />
+      {/* Actions Footer */}
+      <div className="mt-auto bg-white dark:bg-gray-800 p-5 border-t border-gray-100 dark:border-gray-700 space-y-3">
+        
+        {/* GOATED BUTTONS START */}
+        
+        {/* 1. Timeline Button */}
+        <Link href={`/farm/farm1`} className="relative group w-full px-6 py-3 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 text-white font-bold shadow-lg hover:shadow-cyan-500/30 hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2 overflow-hidden">
+          <div className="absolute inset-0 bg-white/20 group-hover:translate-x-full transition-transform duration-500 ease-in-out -skew-x-12"></div>
+          <Eye className="w-5 h-5" /> 
+          <span className="relative">View Farm Timeline</span>
+        </Link>
 
-          <div className="grid grid-cols-2 gap-2 text-sm mb-2">
-            <div>
-              <p className="text-secondary-500">{t('seedsPlanted')}</p>
-              <p className="font-medium">{crop[7].toString()}</p>
-            </div>
-            {Number(crop[6]) >= 2 && (
-              <div>
-                <p className="text-secondary-500">{t('harvested')}</p>
-                <p className="font-medium">{crop[8].toString()}</p>
-              </div>
+        {/* 2. Predict Button */}
+        <button
+          onClick={handlePredict}
+          disabled={!sensorData || (!!predictionTimer && predictionTimer !== "Ready")}
+          className={`relative group w-full px-6 py-3 rounded-xl text-white font-bold shadow-lg transition-all flex items-center justify-center overflow-hidden ${
+            !sensorData ? 'bg-gray-300 cursor-not-allowed text-gray-500 shadow-none' :
+            predictionTimer !== "Ready" ? 'bg-gradient-to-r from-amber-500 to-orange-500 hover:shadow-orange-500/30' :
+            'bg-gradient-to-r from-violet-600 to-purple-600 hover:shadow-purple-500/30 hover:-translate-y-0.5'
+          }`}
+        >
+          {/* Shine Effect */}
+          {sensorData && <div className="absolute inset-0 bg-white/20 group-hover:translate-x-full transition-transform duration-500 ease-in-out -skew-x-12"></div>}
+          
+          <div className="relative flex items-center gap-3">
+            {isClient && predictionTimer && predictionTimer !== "Ready" ? (
+              <>
+                <span className="opacity-90">Predict Best Crop</span>
+                <span className="bg-black/20 px-2 py-0.5 rounded-md text-xs font-mono flex items-center gap-1 border border-white/10">
+                  <Clock className="w-3 h-3" /> {predictionTimer}
+                </span>
+              </>
+            ) : (
+              <>
+                <Cpu className="w-5 h-5" />
+                <span>Predict Best Crop</span>
+              </>
             )}
           </div>
+        </button>
+        
+        {/* GOATED BUTTONS END */}
 
-          {sensorLoading ? (
-            <div className="mt-2 border-t border-secondary-100 pt-2 flex justify-center">
-              <Loader2 className="w-5 h-5 animate-spin text-primary-600" />
-            </div>
-          ) : sensorData ? (
-            <div className="mt-2 border-t border-secondary-100 pt-2">
-              <h4 className="text-sm font-medium text-secondary-500 mb-1">Sensor Data</h4>
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <div className="bg-blue-50 p-1.5 rounded">
-                  <p className="text-blue-600">Moisture</p>
-                  <p className="font-bold">{sensorData.moisture}</p>
-                </div>
-                <div className="bg-orange-50 p-1.5 rounded">
-                  <p className="text-orange-600">Temp</p>
-                  <p className="font-bold">{sensorData.temperature}°C</p>
-                </div>
-                <div className="bg-green-50 p-1.5 rounded">
-                  <p className="text-green-600">Humidity</p>
-                  <p className="font-bold">{sensorData.humidity}%</p>
-                </div>
+        {/* Blockchain Actions */}
+        <div className="pt-3 mt-2 border-t border-gray-100 dark:border-gray-700">
+          {showLossInput ? (
+            <div className="space-y-2">
+              <input 
+                type="number" 
+                placeholder="Loss % (0-100)" 
+                className="w-full px-3 py-2 text-sm border rounded bg-gray-50 dark:bg-gray-900 dark:border-gray-600"
+                value={lossPercentage}
+                onChange={e => setLossPercentage(e.target.value)}
+              />
+              <div className="flex gap-2">
+                <button onClick={() => setShowLossInput(false)} className="flex-1 py-2 text-xs border rounded hover:bg-gray-100">Cancel</button>
+                <button onClick={handleHarvest} className="flex-1 py-2 text-xs bg-green-600 text-white rounded hover:bg-green-700">Confirm</button>
               </div>
             </div>
-          ) : sensorError && (
-            <div className="mt-2 border-t border-secondary-100 pt-2 text-red-500 text-sm">
-              {sensorError}
-            </div>
+          ) : (
+            Number(crop[6]) === 0 ? (
+              <button onClick={() => handleUpdateStage(1)} className="w-full py-2 text-sm font-medium border border-green-500 text-green-600 rounded-lg hover:bg-green-50 transition-colors">Mark as Growing</button>
+            ) : Number(crop[6]) === 1 ? (
+              <button onClick={() => setShowLossInput(true)} className="w-full py-2 text-sm font-medium border border-amber-500 text-amber-600 rounded-lg hover:bg-amber-50 transition-colors">Harvest Crop</button>
+            ) : Number(crop[6]) === 2 ? (
+              <button onClick={handleStore} className="w-full py-2 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors shadow-md hover:shadow-lg">Store in Silo</button>
+            ) : null
           )}
         </div>
       </div>
 
-      <div className="border-t border-secondary-200 p-4">
-        {showLossInput ? (
-          <div className="space-y-3">
-            <div>
-              <label className="block text-sm font-medium mb-1">{t('lossPercentage')}</label>
-              <input
-                type="number"
-                value={lossPercentage}
-                onChange={(e) => setLossPercentage(e.target.value)}
-                className="input-field"
-                placeholder="0-100"
-                min="0"
-                max="100"
-              />
-            </div>
-            <div className="flex space-x-2">
-              <button
-                onClick={() => setShowLossInput(false)}
-                className="btn btn-outline flex-1"
-              >
-                {t('cancel')}
-              </button>
-              <button
-                onClick={handleHarvest}
-                disabled={!lossPercentage || loading}
-                className="btn btn-primary flex-1"
-              >
-                {loading ? (
-                  <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-                ) : t('confirmHarvest')}
-              </button>
-            </div>
-          </div>
-        ) : Number(crop[6]) === 0 ? (
-          <button
-            onClick={() => handleUpdateStage(1)}
-            disabled={loading}
-            className="btn btn-outline w-full"
-          >
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-            ) : t('markAsGrowing')}
-          </button>
-        ) : Number(crop[6]) === 1 ? (
-          <button
-            onClick={() => setShowLossInput(true)}
-            disabled={loading}
-            className="btn btn-outline w-full"
-          >
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-            ) : t('markAsHarvested')}
-          </button>
-        ) : Number(crop[6]) === 2 ? (
-          <button
-            onClick={handleStore}
-            disabled={loading}
-            className="btn btn-primary w-full"
-          >
-            {loading ? (
-              <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-            ) : t('storeInSilo')}
-          </button>
-        ) : null}
-      </div>
-
-      {/* Sensor Connection Modal */}
+      {/* IoT Modal - Clean & Minimal */}
       {showSensorModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-sm">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold flex items-center gap-2">
-                <SatelliteDish className="w-5 h-5" />
-                IoT Sensors Connection
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white dark:bg-gray-800 w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 overflow-hidden transform transition-all scale-100">
+            <div className="px-6 py-4 border-b border-gray-100 dark:border-gray-700 flex justify-between items-center bg-gray-50 dark:bg-gray-800">
+              <h3 className="font-bold text-gray-800 dark:text-white flex items-center gap-2">
+                <SatelliteDish className="w-5 h-5 text-blue-500" /> Link Device
               </h3>
-              <button
-                onClick={() => {
-                  setShowSensorModal(false)
-                  setSensorError('')
-                }}
-                className="text-secondary-500 hover:text-secondary-700"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              <button onClick={() => setShowSensorModal(false)}><X className="w-5 h-5 text-gray-400 hover:text-gray-600" /></button>
             </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">
-                  Device ID
-                </label>
-                <input
-                  type="text"
-                  value={deviceId}
-                  onChange={(e) => setDeviceId(e.target.value)}
-                  className="input-field w-full"
-                  placeholder="Enter sensor device ID"
-                />
+            <div className="p-6 space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Device ID</label>
+                <div className="relative">
+                  <Cpu className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <input 
+                    type="text" 
+                    className="w-full pl-10 pr-3 py-2.5 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white dark:bg-gray-900"
+                    placeholder="e.g. device_001"
+                    value={deviceId}
+                    onChange={e => setDeviceId(e.target.value)}
+                  />
+                </div>
               </div>
-
-              {sensorError && (
-                <div className="text-red-500 text-sm">{sensorError}</div>
-              )}
-
-              <button
-                onClick={handleGetSensorData}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Access Key</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                  <input 
+                    type="password" 
+                    className="w-full pl-10 pr-3 py-2.5 border border-gray-200 dark:border-gray-600 rounded-xl text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white dark:bg-gray-900"
+                    placeholder="••••••••"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                  />
+                </div>
+              </div>
+              <button 
+                onClick={() => connectDevice(deviceId, password)}
                 disabled={sensorLoading}
-                className="btn btn-primary w-full"
+                className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm transition-colors flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20"
               >
-                {sensorLoading ? (
-                  <span className="flex items-center justify-center">
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Connecting...
-                  </span>
-                ) : (
-                  'Connect Device'
-                )}
+                {sensorLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Connect & Verify"}
               </button>
             </div>
           </div>

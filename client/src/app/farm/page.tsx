@@ -1,14 +1,14 @@
-// src/app/farm/page.tsx
 'use client'
 
 import { useAccount, useReadContract, useWriteContract } from 'wagmi'
 import { contractAddress, contractABI } from '@/utils/contract'
 import { useTranslations } from '@/utils/i18n'
 import { useState } from 'react'
-import toast from 'react-hot-toast'
+// import toast from 'react-hot-toast' // <-- REMOVED
 import CropCard from '@/components/CropCard'
 import Card from '@/components/Card'
 import { Sprout, Loader2, X } from 'lucide-react'
+import Notification, { NotificationType } from '@/components/Notification'
 
 export default function FarmPage() {
   const { address, isConnected } = useAccount()
@@ -18,6 +18,12 @@ export default function FarmPage() {
   const [seedsAmount, setSeedsAmount] = useState(100)
   const [loading, setLoading] = useState(false)
   const [showSowModal, setShowSowModal] = useState(false)
+
+  // --- NOTIFICATION STATE ---
+  const [notification, setNotification] = useState<{ message: string, type: NotificationType } | null>(null);
+  const notify = (message: string, type: NotificationType) => {
+    setNotification({ message, type });
+  };
 
   const { data: farmerCrops, refetch: refetchCrops } = useReadContract({
     address: contractAddress,
@@ -35,7 +41,7 @@ export default function FarmPage() {
 
   const sowCrop = async () => {
     if (!seedsAmount || seedsAmount <= 0) {
-      toast.error(t('invalidSeedAmount'))
+      notify(t('invalidSeedAmount'), 'error');
       return
     }
 
@@ -45,13 +51,13 @@ export default function FarmPage() {
         address: contractAddress,
         abi: contractABI,
         functionName: 'sowCrop',
-        args: [selectedCropType, "farm123", seedsAmount],
+        args: [selectedCropType, "farm123", seedsAmount], // KEEPING YOUR OLD LOGIC
       })
-      toast.success(t('cropSownSuccess'))
+      notify(t('cropSownSuccess'), 'success');
       refetchCrops()
       setShowSowModal(false)
     } catch (error: any) {
-      toast.error(t('sowCropError') + (error.shortMessage || error.message))
+      notify(t('sowCropError') + (error.shortMessage || error.message), 'error');
     } finally {
       setLoading(false)
     }
@@ -69,16 +75,16 @@ export default function FarmPage() {
       
       if (newStage === 1) {
         const points = seedsAmount * 4
-        toast.success(`${t('cropGrowingSuccess')} +${points} ${t('sustainabilityPoints')}`)
+        notify(`${t('cropGrowingSuccess')} +${points} ${t('sustainabilityPoints')}`, 'points')
       } else if (newStage === 2) {
         const harvested = seedsAmount * (100 - (lossPercentage || 0)) / 100
         const points = harvested * 2
-        toast.success(`${t('cropHarvestedSuccess')} +${points} ${t('harvestPoints')}`)
+        notify(`${t('cropHarvestedSuccess')} +${points} ${t('harvestPoints')}`, 'points')
       }
       
       refetchCrops()
     } catch (error: any) {
-      toast.error(t('updateCropError') + (error.shortMessage || error.message))
+      notify(t('updateCropError') + (error.shortMessage || error.message), 'error');
     } finally {
       setLoading(false)
     }
@@ -93,10 +99,10 @@ export default function FarmPage() {
         functionName: 'storeCrop',
         args: [BigInt(cropId)],
       })
-      toast.success(t('cropStoredSuccess'))
+      notify(t('cropStoredSuccess'), 'success');
       refetchCrops()
     } catch (error: any) {
-      toast.error(t('storeCropError') + (error.shortMessage || error.message))
+      notify(t('storeCropError') + (error.shortMessage || error.message), 'error');
     } finally {
       setLoading(false)
     }
@@ -134,6 +140,14 @@ export default function FarmPage() {
 
   return (
     <main className="py-8">
+      {notification && (
+        <Notification
+          message={notification.message}
+          type={notification.type}
+          onClose={() => setNotification(null)}
+        />
+      )}
+
       <div className="max-w-7xl mx-auto px-4">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
           <div>
@@ -160,6 +174,7 @@ export default function FarmPage() {
                 cropId={Number(cropId)} 
                 onUpdateStage={updateCropStage}
                 onStore={storeCrop}
+                onNotify={notify} // <-- PASSING THE NOTIFY FUNCTION
               />
             ))}
           </div>
