@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { CheckCircle, XCircle, Info, Award } from 'lucide-react'
+import { CheckCircle, XCircle, Info, Award, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 export type NotificationType = 'success' | 'error' | 'info' | 'points'
@@ -17,79 +17,88 @@ export default function Notification({ message, type, onClose }: {
     const timer = setTimeout(() => {
       setVisible(false)
       onClose()
-    }, 4000) // Auto close after 4s
-
+    }, 5000)
     return () => clearTimeout(timer)
   }, [onClose])
 
-  // Define styles based on type
   const styleConfig = {
     success: {
-      bg: 'bg-white dark:bg-gray-800',
-      border: 'border-l-4 border-green-500',
-      iconColor: 'text-green-500',
+      gradient: 'from-emerald-500 to-green-600',
+      iconColor: 'text-emerald-500',
       Icon: CheckCircle,
       title: 'Success'
     },
     error: {
-      bg: 'bg-white dark:bg-gray-800',
-      border: 'border-l-4 border-red-500',
+      gradient: 'from-red-500 to-rose-600',
       iconColor: 'text-red-500',
       Icon: XCircle,
       title: 'Error'
     },
     info: {
-      bg: 'bg-white dark:bg-gray-800',
-      border: 'border-l-4 border-blue-500',
+      gradient: 'from-blue-500 to-indigo-600',
       iconColor: 'text-blue-500',
       Icon: Info,
-      title: 'Info'
+      title: 'Information'
     },
     points: {
-      bg: 'bg-white dark:bg-gray-800',
-      border: 'border-l-4 border-yellow-500',
-      iconColor: 'text-yellow-500',
+      gradient: 'from-amber-400 to-orange-500',
+      iconColor: 'text-amber-500',
       Icon: Award,
       title: 'Points Earned!'
     }
   }[type]
 
-  const { Icon, iconColor, bg, border } = styleConfig
+  const { Icon, gradient, iconColor, title } = styleConfig
 
   return (
     <AnimatePresence>
       {visible && (
-        // Z-INDEX 9999 ENSURES IT IS ON TOP OF EVERYTHING
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center pointer-events-none">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center px-4">
+          {/* Blur Backdrop */}
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => { setVisible(false); onClose(); }}
+          />
+
+          {/* Notification Card */}
           <motion.div
-            initial={{ opacity: 0, scale: 0.5, y: 20 }}
+            initial={{ opacity: 0, scale: 0.9, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9 }}
-            transition={{ type: "spring", stiffness: 400, damping: 25 }}
-            className={`pointer-events-auto shadow-2xl rounded-xl p-6 max-w-md w-full mx-4 ${bg} ${border} relative overflow-hidden`}
+            exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            className="relative w-full max-w-sm bg-white dark:bg-gray-900 rounded-2xl shadow-2xl overflow-hidden"
           >
-            {/* Background Decoration */}
-            <div className={`absolute top-0 right-0 -mt-4 -mr-4 w-24 h-24 rounded-full opacity-10 ${iconColor.replace('text-', 'bg-')}`}></div>
-            
-            <div className="flex items-start gap-4 relative z-10">
-              <div className={`p-2 rounded-full bg-gray-50 dark:bg-gray-700 shrink-0 ${iconColor}`}>
-                <Icon className="w-8 h-8" />
+            {/* Top Gradient Border */}
+            <div className={`h-1.5 w-full bg-gradient-to-r ${gradient}`} />
+
+            <div className="p-6">
+              <div className="flex items-start gap-4">
+                {/* Icon Box */}
+                <div className={`p-3 rounded-xl bg-gray-50 dark:bg-gray-800 shadow-inner ${iconColor}`}>
+                  <Icon className="w-6 h-6" />
+                </div>
+
+                <div className="flex-1 pt-1">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-lg leading-none mb-2">
+                    {title}
+                  </h3>
+                  <p className="text-gray-600 dark:text-gray-300 text-sm leading-relaxed">
+                    {message}
+                  </p>
+                </div>
               </div>
-              <div className="flex-1 pt-1">
-                <h3 className={`font-bold text-lg ${iconColor} mb-1`}>{styleConfig.title}</h3>
-                <p className="text-gray-600 dark:text-gray-300 text-sm font-medium leading-relaxed">
-                  {message}
-                </p>
+
+              {/* Close Button Area */}
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={() => { setVisible(false); onClose(); }}
+                  className={`px-4 py-2 rounded-lg text-sm font-semibold text-white bg-gradient-to-r ${gradient} hover:shadow-lg hover:opacity-90 transition-all active:scale-95`}
+                >
+                  Dismiss
+                </button>
               </div>
-              <button 
-                onClick={() => {
-                  setVisible(false)
-                  onClose()
-                }}
-                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
-              >
-                &times;
-              </button>
             </div>
           </motion.div>
         </div>

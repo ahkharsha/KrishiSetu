@@ -8,6 +8,8 @@ const FormData = require("form-data");
 
 // --- 1. CONFIGURATION ---
 
+const PINATA_API_KEY = "54615c2c7e49f8647859";
+const PINATA_API_SECRET = "96bd3e97dacbf9629ec818fa28dc00f0963bb5d313b62ce5b1c6edc60cb632bf";
 
 // Use path.join to build reliable paths
 // __dirname is the path to the folder this script is in (image-uploader)

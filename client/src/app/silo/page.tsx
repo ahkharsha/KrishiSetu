@@ -9,6 +9,7 @@ import Card from '@/components/Card'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import { Loader2 } from 'lucide-react'
+import { type NotificationType } from '@/components/Notification'
 
 export default function SiloPage() {
   const { address, isConnected } = useAccount()
@@ -32,6 +33,16 @@ export default function SiloPage() {
     functionName: 'getFarmerStoredCrops',
     args: [address],
   }) as { data: bigint[] | undefined, isLoading: boolean }
+
+  const handleNotify = (message: string, type: NotificationType) => {
+    if (type === 'success') {
+      toast.success(message)
+    } else if (type === 'error') {
+      toast.error(message)
+    } else {
+      toast(message)
+    }
+  }
 
   const listCropForSale = () => {
     if (!selectedCrop || !price || !quantity) return
@@ -108,6 +119,7 @@ export default function SiloPage() {
                   cropId={Number(cropId)}
                   onUpdateStage={() => {}}
                   onStore={() => {}}
+                  onNotify={handleNotify}
                 />
               ))}
             </div>
